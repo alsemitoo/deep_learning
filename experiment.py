@@ -7,8 +7,6 @@
 #
 # Modes: "all", "byte", "hf_bpe", "custom_bpe"
 #
-# Requirements:
-#   pip install torch datasets tokenizers tqdm
 
 import os
 import math
