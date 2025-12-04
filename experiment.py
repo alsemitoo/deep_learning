@@ -1,13 +1,3 @@
-# compare_tokenizers.py
-# Unified experiment runner: Byte-level vs HF-BPE vs Custom-BPE
-#
-# Usage examples:
-#   python compare_tokenizers.py --mode all
-#   python compare_tokenizers.py --mode hf_bpe
-#
-# Modes: "all", "byte", "hf_bpe", "custom_bpe"
-#
-
 import os
 import math
 import json
@@ -25,7 +15,7 @@ from tqdm import tqdm
 # ---------------------------
 # Experiment configuration
 # ---------------------------
-VOCAB_SIZE = 10000 # From 4K to 10K to accommodate Chinese characters
+VOCAB_SIZE = 4000 
 BLOCK_SIZE = 512
 BATCH_SIZE = 16
 N_LAYERS = 6
@@ -34,11 +24,11 @@ N_EMBD = 256
 D_FF = 1024
 DROPOUT = 0.1
 LR = 3e-4
-MAX_ITERS = 15000            # change to larger for real training
+MAX_ITERS = 15000            
 EVAL_INTERVAL = 250
-EVAL_ITERS = 30             # number of batches to estimate loss (keeps eval fast)
-NUM_SAMPLES = 15000          # streaming samples from wikipedia (tune as needed)
-MAX_CHARS = 10_000_000
+EVAL_ITERS = 30             
+NUM_SAMPLES = 20000         
+MAX_CHARS = 70_000_000
 SEED = 1337
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SAVE_DIR = "compare_runs"
@@ -93,7 +83,6 @@ def clean_text(text: str):
 # Tokenizers
 # ---------------------------
 
-# 1) Byte-level tokenizer
 class ByteLevelTokenizer:
     """
     A standard byte-level tokenizer that maps all 256 bytes to IDs 0-255.
@@ -104,6 +93,13 @@ class ByteLevelTokenizer:
         self.base_vocab_size = 256
         self.max_length = max_length
 
+        # Special tokens are mapped to IDs >= 256
+        self.pad_token_id = self.base_vocab_size + 0  # ID 256
+        self.bos_token_id = self.base_vocab_size + 1  # ID 257
+        self.eos_token_id = self.base_vocab_size + 2  # ID 258
+
+        self.vocab_size = self.base_vocab_size + 3  # Total vocabulary size is 256 + 3 special tokens
+
     def _byte_to_id(self, byte_value: int) -> int:
         """Map a byte value (0-255) directly to its ID (0-255)"""
         return byte_value
@@ -112,6 +108,23 @@ class ByteLevelTokenizer:
         """Map an ID (0-255) back to its byte value (0-255)"""
         return token_id
 
+    def encode(self, text: str) -> list[int]:
+        """Convert text to UTF-8 bytes, then map bytes to their token IDs."""
+        # Convert text to a sequence of byte values (0-255)
+        byte_values = list(text.encode('utf-8'))
+        
+        # Map each byte value to its corresponding token ID (0-255)
+        token_sequence = [self._byte_to_id(b) for b in byte_values]
+        
+        # Add BOS and EOS special tokens (IDs 257 and 258)
+        token_sequence = [self.bos_token_id] + token_sequence + [self.eos_token_id]
+        
+        # Truncate if too long
+        if len(token_sequence) > self.max_length:
+            token_sequence = token_sequence[:self.max_length]
+
+        return token_sequence
+
     def decode(self, token_sequence: list[int]) -> str:
         """Convert token IDs back to bytes, then decode bytes to text."""
         byte_values = []
@@ -119,6 +132,7 @@ class ByteLevelTokenizer:
             # Only process IDs that correspond to actual bytes (0-255)
             if token_id < self.base_vocab_size:
                 byte_values.append(self._id_to_byte(token_id))
+            # Special tokens (>= 256) are ignored during decoding
 
         try:
             # Convert the list of byte values back to a bytes object, then decode as UTF-8
@@ -126,7 +140,7 @@ class ByteLevelTokenizer:
         except Exception:
             return ""
 
-    def encode(self, text: str) -> torch.Tensor:
+    def encode_lm_data(self, text: str) -> torch.Tensor:
         """
         Encodes the entire text into a single tensor, strictly using
         byte IDs 0-255, and omitting BOS/EOS for the sliding-window LM task.
@@ -139,9 +153,8 @@ class ByteLevelTokenizer:
 
         return torch.tensor(token_sequence, dtype=torch.long)
 
-# 2) HuggingFace tokenizers BPE (standard)
 def train_hf_bpe_tokenizer(texts: List[str], vocab_size: int = VOCAB_SIZE, save_path: str = None):
-    # Tokenizers library bpe trainer expects a list of files OR pre-tokenizer
+
     tokenizer = Tokenizer(models.BPE(unk_token="[UNK]"))
     tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
     trainer = trainers.BpeTrainer(
@@ -157,7 +170,7 @@ def train_hf_bpe_tokenizer(texts: List[str], vocab_size: int = VOCAB_SIZE, save_
             f.write(t.replace("\n", " ") + "\n")
 
     tokenizer.train([tmp_file], trainer)
-    # post-processor to add BOS/EOS tokens automatically during encode
+    
     tokenizer.post_processor = processors.TemplateProcessing(
         single="[BOS] $A [EOS]",
         pair="[BOS] $A [EOS] $B:1 [EOS]:1",
@@ -168,13 +181,7 @@ def train_hf_bpe_tokenizer(texts: List[str], vocab_size: int = VOCAB_SIZE, save_
         tokenizer.save(save_path)
     return tokenizer
 
-# 3) Custom BPE
 class CustomBPETokenizer:
-    """
-    Pure BPE tokenizer with GPT-2 style pre-tokenization,
-    consistent merges, no lowercase, no UNK in practice,
-    and stable encode/decode symmetry.
-    """
 
     def __init__(self, vocab_size=8000, max_length=512):
         self.vocab_size = vocab_size
@@ -203,14 +210,12 @@ class CustomBPETokenizer:
         self.trained = False
         self.cache = {}
 
-        # Regex to capture Chinese/Unicode characters
         self.pat = re.compile(
             r"""'s|'t|'re|'ve|'m|'ll|'d| ?\w+| ?\d+| ?[^\s\w]+|\s+""",
             re.UNICODE
         )
 
     def _tokenize_text(self, text):
-        """GPT-2 style token splitting with Ġ for leading spaces."""
         tokens = re.findall(self.pat, text)
         out = []
         for t in tokens:
@@ -287,7 +292,6 @@ class CustomBPETokenizer:
         self.cache = {}
 
     def _apply_bpe(self, token):
-        """Apply merges to a single token."""
         if token in self.cache:
             return self.cache[token]
 
@@ -343,7 +347,6 @@ class CustomBPETokenizer:
         return text.replace("Ġ", " ").strip()
 
     def encode_lm_data(self, text, chunk_size=50000):
-        """Chunked encoding without truncation."""
         all_ids = []
         for i in range(0, len(text), chunk_size):
             chunk = text[i:i+chunk_size]
@@ -454,6 +457,71 @@ class GPT(nn.Module):
             idx = torch.cat([idx, idx_next], dim=1)
         return idx
 
+# ---------------
+# RNN Model (LSTM based)
+# ---------------
+class RNNModel(nn.Module):
+    def __init__(self, config: GPTConfig):
+        super().__init__()
+        self.config = config
+        self.tok_emb = nn.Embedding(config.vocab_size, config.n_embd)
+        
+        # LSTM Layer
+        # batch_first=True means input is (Batch, Seq, Feature)
+        self.rnn = nn.LSTM(
+            input_size=config.n_embd,
+            hidden_size=config.n_embd,
+            num_layers=config.n_layers,
+            batch_first=True,
+            dropout=config.dropout if config.n_layers > 1 else 0
+        )
+        
+        self.ln_f = nn.LayerNorm(config.n_embd)
+        self.head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+
+        self.head.weight = self.tok_emb.weight
+        
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, (nn.Linear, nn.Embedding)):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        if isinstance(module, nn.Linear) and hasattr(module, "bias") and module.bias is not None:
+            nn.init.zeros_(module.bias)
+
+    def forward(self, idx):
+        # idx: (Batch, Time)
+        x = self.tok_emb(idx)
+        
+        # RNN Forward pass
+        # We don't pass an initial hidden state, so it defaults to 0
+        # This treats every block as an independent sequence (like the Transformer training)
+        out, _ = self.rnn(x)
+        
+        out = self.ln_f(out)
+        logits = self.head(out)
+        return logits
+
+    @torch.no_grad()
+    def generate(self, idx: torch.Tensor, max_new_tokens: int, temperature: float = 1.0, top_k: int = None):
+        # Note: This is a naive generation that re-processes the whole sequence every step.
+        # Efficient RNN generation would cache the hidden state, but this is easier to implement.
+        for _ in range(max_new_tokens):
+            # Crop context if it gets too long (RNNs can handle longer, but for consistency)
+            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
+            
+            logits = self(idx_cond)
+            logits = logits[:, -1, :] / temperature
+            
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float('Inf')
+                
+            probs = torch.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat([idx, idx_next], dim=1)
+        return idx
+
 # ---------------------------
 # Data loading / batching
 # ---------------------------
@@ -514,24 +582,17 @@ def estimate_loss(model, train_data, val_data, config, device, loss_fn):
     return out
 
 def calculate_bpc(loss, total_tokens, total_chars):
-    """
-    Converts CrossEntropyLoss to Bits-Per-Character.
-    loss: The raw validation loss (nats)
-    total_tokens: Number of tokens in the validation set
-    total_chars: Number of characters in the original validation text
-    """
     total_nats = loss * total_tokens
     total_bits = total_nats / math.log(2)
     bpc = total_bits / total_chars
     return bpc
 
-def run_experiment(mode: str, texts: List[str], run_name: str):
+def run_experiment(mode: str, texts: List[str], run_name: str, model_type: str = "transformer"):
     """
     mode: "byte", "hf_bpe", "custom_bpe"
-    texts: list of raw article strings to train tokenizers on
-    run_name: directory basename to save results
+    model_type: "transformer" or "rnn"
     """
-    print(f"\n=== Running experiment: {mode} ===")
+    print(f"\n=== Running experiment: {mode} | Model: {model_type} ===")
     run_dir = os.path.join(SAVE_DIR, run_name)
     os.makedirs(run_dir, exist_ok=True)
 
@@ -540,14 +601,13 @@ def run_experiment(mode: str, texts: List[str], run_name: str):
     config.vocab_size = VOCAB_SIZE
     config.block_size = BLOCK_SIZE
 
-    # --- 1. Tokenization & Compression Ratio ---
     full_text_str = " ".join(texts)
     total_chars = len(full_text_str)
     
     if mode == "byte":
         tokenizer = ByteLevelTokenizer(max_length=BLOCK_SIZE)
-        data_tensor = tokenizer.encode(full_text_str)
-        vocab_size = 256 # The same for all byte-level-tokenized languages
+        data_tensor = tokenizer.encode_lm_data(full_text_str)
+        vocab_size = tokenizer.vocab_size
         def encode_prompt(p):
             return torch.tensor(tokenizer.encode(p), dtype=torch.long).unsqueeze(0)
 
@@ -580,7 +640,6 @@ def run_experiment(mode: str, texts: List[str], run_name: str):
     else:
         raise ValueError("Unknown mode")
 
-    # Calculate Compression Metrics
     total_tokens = len(data_tensor)
     tokens_per_char = total_tokens / total_chars if total_chars > 0 else 0
     print(f"Compression: {total_tokens} tokens / {total_chars} chars = {tokens_per_char:.4f} tokens/char")
@@ -598,7 +657,14 @@ def run_experiment(mode: str, texts: List[str], run_name: str):
 
     # Create model
     config.vocab_size = vocab_size
-    model = GPT(config).to(DEVICE)
+    
+    if model_type == "transformer":
+        model = GPT(config).to(DEVICE)
+    elif model_type == "rnn":
+        model = RNNModel(config).to(DEVICE)
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+        
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.01)
     loss_fn = nn.CrossEntropyLoss()
 
@@ -608,8 +674,8 @@ def run_experiment(mode: str, texts: List[str], run_name: str):
         "vocab_size": vocab_size,
         "total_chars": total_chars,
         "total_tokens": total_tokens,
-        "tokens_per_char": tokens_per_char, # <--- Metric 1: Compression Ratio
-        "val_data_tokens": val_tokens,      # <--- Fix for KeyError
+        "tokens_per_char": tokens_per_char, 
+        "val_data_tokens": val_tokens,      
         "val_chars_approx": val_chars,
         "train_losses": [],
         "val_losses": [],
@@ -632,7 +698,6 @@ def run_experiment(mode: str, texts: List[str], run_name: str):
             results["normalized_train"].append(norm_train)
             results["normalized_val"].append(norm_val)
             
-            # Calculate BPC live
             bpc = calculate_bpc(val_loss, val_tokens, val_chars)
             
             print(f"\nIter {it}: val_loss={val_loss:.4f} BPC={bpc:.4f}")
@@ -650,7 +715,6 @@ def run_experiment(mode: str, texts: List[str], run_name: str):
     final = estimate_loss(model, train_data, val_data, config, DEVICE, loss_fn)
     results["final_val_loss"] = final["val"]
     
-    # --- 2. Inference Speed ---
     print("\nMeasuring Inference Speed...")
     model.eval()
     prompts = ["The future of", "Artificial intelligence will", "Climate change is"]
@@ -661,13 +725,13 @@ def run_experiment(mode: str, texts: List[str], run_name: str):
     for p in prompts:
         try:
             enc = encode_prompt(p).to(DEVICE)
-            start_t = time.time() # <--- Start Timer
+            start_t = time.time() 
             
             # Generate 50 tokens
             gen_len = 50
             sample = model.generate(enc, max_new_tokens=gen_len, temperature=0.8, top_k=40)[0]
             
-            end_t = time.time()   # <--- End Timer
+            end_t = time.time()   
             
             # Calculate speed
             duration = end_t - start_t
@@ -683,7 +747,7 @@ def run_experiment(mode: str, texts: List[str], run_name: str):
     # Calculate average speed
     if total_time > 0:
         tokens_per_sec = total_gen_tokens / total_time
-        results["inference_speed_tokens_sec"] = tokens_per_sec # <--- Metric 2: Inference Speed
+        results["inference_speed_tokens_sec"] = tokens_per_sec 
         print(f"Inference Speed: {tokens_per_sec:.2f} tokens/sec")
     else:
         results["inference_speed_tokens_sec"] = 0
@@ -697,33 +761,33 @@ def run_experiment(mode: str, texts: List[str], run_name: str):
     return results
 
 # ---------------------------
-# Main runner
+# Main 
 # ---------------------------
 def main():
-    languages = ["en", "zh"]
-    modes = ["byte", "custom_bpe", "hf_bpe"] 
+    languages = ["en","zh"]
+    modes = ["custom_bpe", "hf_bpe"] 
+    model_types = ["transformer", "rnn"] 
     
     for lang in languages:
         texts = load_streaming_data(lang=lang, num_samples=NUM_SAMPLES, max_chars=MAX_CHARS)
         
-        for mode in modes:
-            run_name = f"{lang}_{mode}"
-            print(f"--- Starting Run: {run_name} ---")
-            
-            results = run_experiment(mode, texts, run_name)
-            
-            # --- 3. BPC Performance (Final Calculation) ---
-            # Now safe because 'val_data_tokens' is in results
-            results['final_bpc'] = calculate_bpc(
-                results['final_val_loss'], 
-                results['val_data_tokens'], 
-                results['val_chars_approx']
-            )
-            
-            # Overwrite file with final BPC included
-            with open(os.path.join(SAVE_DIR, f"final_{run_name}.json"), "w") as f:
-                json.dump(results, f, indent=2)
-            print(f"Saved final results to final_{run_name}.json (BPC: {results['final_bpc']:.4f})")
+        for model_type in model_types:
+            for mode in modes:
+                
+                run_name = f"{lang}_{model_type}_{mode}"
+                print(f"--- Starting Run: {run_name} ---")
+                
+                results = run_experiment(mode, texts, run_name, model_type=model_type)
+                
+                results['final_bpc'] = calculate_bpc(
+                    results['final_val_loss'], 
+                    results['val_data_tokens'], 
+                    results['val_chars_approx']
+                )
+                
+                with open(os.path.join(SAVE_DIR, f"final_{run_name}.json"), "w") as f:
+                    json.dump(results, f, indent=2)
+                print(f"Saved final results to final_{run_name}.json (BPC: {results['final_bpc']:.4f})")
 
 if __name__ == "__main__":
     main()
