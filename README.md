@@ -1,7 +1,7 @@
 
 ## Deep Learning project: comparing tokenization strategies
 
-This project provides a unified experimental framework to compare three tokenizer strategies—**Byte-level**, **HuggingFace BPE**, and a **Custom BPE implementation**—across multiple languages (English and Chinese). It trains a small GPT-style model on Wikipedia streaming data and evaluates tokenization compression ratio, perplexity, BPC, and inference speed.
+This project provides a unified experimental framework to compare three tokenizer strategies **Byte-level**, **HuggingFace BPE**, and a **Custom BPE implementation** across multiple languages (English and Chinese). It trains a small GPT-style model on Wikipedia streaming data and evaluates tokenization compression ratio, perplexity, BPC, and inference speed.
 
 ### Features
 
@@ -37,5 +37,6 @@ The repository includes:
 ## Requirements
 
 See `requirements.txt` file.
+
 
 
