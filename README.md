@@ -19,13 +19,13 @@ Run all experiments:
 
 ```bash
 python experiment.py --mode all
-Modes: --all --byte --hf_bpe --custom_bpe
 ```
 
 Run a specific tokenizer mode:
 
 ```bash
 python experiment.py --mode hf_bpe
+Modes: --all --byte --hf_bpe --custom_bpe
 ```
 
 ### Jupyter Notebooks
@@ -37,6 +37,7 @@ The repository includes:
 ## Requirements
 
 See `requirements.txt` file.
+
 
 
 
