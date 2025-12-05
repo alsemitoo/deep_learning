@@ -1,4 +1,3 @@
-# README.md
 
 ## compare_tokenizers
 
@@ -46,3 +45,4 @@ The repository includes:
 ## Requirements
 
 See `requirements.txt` file.
+
