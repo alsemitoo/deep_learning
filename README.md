@@ -1,5 +1,5 @@
 
-## compare_tokenizers
+## Deep Learning project: comparing tokenization strategies
 
 This project provides a unified experimental framework to compare three tokenizer strategies—**Byte-level**, **HuggingFace BPE**, and a **Custom BPE implementation**—across multiple languages (English and Chinese). It trains a small GPT-style model on Wikipedia streaming data and evaluates tokenization compression ratio, perplexity, BPC, and inference speed.
 
@@ -18,23 +18,15 @@ This project provides a unified experimental framework to compare three tokenize
 Run all experiments:
 
 ```bash
-python compare_tokenizers.py --mode all
+python experiment.py --mode all
+Modes: --all --byte --hf_bpe --custom_bpe
 ```
 
 Run a specific tokenizer mode:
 
 ```bash
-python compare_tokenizers.py --mode hf_bpe
+python experiment.py --mode hf_bpe
 ```
-
-### Output
-
-Results are saved to the `compare_runs/` directory, including:
-
-* tokenizer files
-* training curves
-* inference metrics
-* final `{lang}_{mode}.json` result summaries
 
 ### Jupyter Notebooks
 
@@ -45,4 +37,5 @@ The repository includes:
 ## Requirements
 
 See `requirements.txt` file.
+
 
